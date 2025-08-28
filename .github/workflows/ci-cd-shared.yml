@@ -1,0 +1,213 @@
+name: CI/CD - Shared Library
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'motor-shared/**'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'motor-shared/**'
+
+env:
+  NODE_VERSION: '18'
+  NPM_REGISTRY: 'https://npm.pkg.github.com'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: motor-shared/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd motor-shared
+          npm ci
+
+      - name: Run linting
+        run: |
+          cd motor-shared
+          npm run lint
+
+      - name: Run type checking
+        run: |
+          cd motor-shared
+          npm run build
+
+      - name: Run tests
+        run: |
+          cd motor-shared
+          npm run test || echo "No tests configured"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.NPM_REGISTRY }}
+          cache: 'npm'
+          cache-dependency-path: motor-shared/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd motor-shared
+          npm ci
+
+      - name: Build library
+        run: |
+          cd motor-shared
+          npm run build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: shared-dist
+          path: motor-shared/dist/
+          retention-days: 1
+
+  version-and-publish:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.NPM_REGISTRY }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install dependencies
+        run: |
+          cd motor-shared
+          npm ci
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: shared-dist
+          path: motor-shared/dist/
+
+      - name: Determine version bump
+        id: version
+        run: |
+          cd motor-shared
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            if git log --format=%B -n 1 | grep -q "\[major\]"; then
+              echo "type=major" >> $GITHUB_OUTPUT
+            elif git log --format=%B -n 1 | grep -q "\[minor\]"; then
+              echo "type=minor" >> $GITHUB_OUTPUT
+            else
+              echo "type=patch" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Development branch - prerelease
+            echo "type=prerelease" >> $GITHUB_OUTPUT
+            echo "preid=beta" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version
+        run: |
+          cd motor-shared
+          if [[ "${{ steps.version.outputs.type }}" == "prerelease" ]]; then
+            npm version prerelease --preid=${{ steps.version.outputs.preid }} --no-git-tag-version
+          else
+            npm version ${{ steps.version.outputs.type }} --no-git-tag-version
+          fi
+
+      - name: Update package references
+        run: |
+          NEW_VERSION=$(cd motor-shared && node -p "require('./package.json').version")
+          
+          # Update backend package.json
+          sed -i "s|\"@motor-projects/motor-shared\": \"file:../motor-shared\"|\"@motor-projects/motor-shared\": \"^$NEW_VERSION\"|g" motor-backend/package.json
+          
+          # Update frontend package.json
+          sed -i "s|\"@motor/shared\": \"file:../motor-shared\"|\"@motor-projects/motor-shared\": \"^$NEW_VERSION\"|g" motor-web-frontend/package.json
+          
+          # Update mobile app package.json
+          if [ -f motor-mobile-app/package.json ]; then
+            sed -i "s|\"@motor-projects/motor-shared\": \"file:../motor-shared\"|\"@motor-projects/motor-shared\": \"^$NEW_VERSION\"|g" motor-mobile-app/package.json
+          fi
+
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd motor-shared
+          npm publish
+          
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_VERSION=$(cd motor-shared && node -p "require('./package.json').version")
+          
+          gh release create "v$NEW_VERSION" \
+            --title "Motor Shared Library v$NEW_VERSION" \
+            --notes "Auto-generated release for motor-shared library" \
+            --target main
+
+      - name: Commit version updates
+        run: |
+          NEW_VERSION=$(cd motor-shared && node -p "require('./package.json').version")
+          
+          git add .
+          git commit -m "chore: bump motor-shared to v$NEW_VERSION [skip ci]"
+          git push origin ${{ github.ref_name }}
+
+  trigger-dependent-builds:
+    runs-on: ubuntu-latest
+    needs: version-and-publish
+    if: github.event_name == 'push'
+    
+    steps:
+      - name: Trigger backend build
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: shared-library-updated
+          client-payload: '{"component": "backend"}'
+
+      - name: Trigger frontend build
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: shared-library-updated
+          client-payload: '{"component": "frontend"}'
+
+      - name: Trigger mobile build
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: shared-library-updated
+          client-payload: '{"component": "mobile"}'

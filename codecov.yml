@@ -1,0 +1,74 @@
+codecov:
+  require_ci_to_pass: true
+  notify:
+    wait_for_ci: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+  
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 1%
+        base: auto
+        branches:
+          - main
+          - develop
+      
+      unit-tests:
+        target: 85%
+        paths:
+          - "src/"
+        flags:
+          - unit
+          
+      integration-tests:
+        target: 75%
+        paths:
+          - "src/"
+        flags:
+          - integration
+
+    patch:
+      default:
+        target: 80%
+        threshold: 1%
+
+  ignore:
+    - "**/*.test.ts"
+    - "**/*.test.tsx"
+    - "**/*.spec.ts" 
+    - "**/*.spec.tsx"
+    - "src/__tests__/**"
+    - "e2e/**"
+    - "scripts/**"
+    - "**/*.d.ts"
+    - "metro.config.js"
+    - "babel.config.js"
+    - "jest.config.js"
+    - ".detoxrc.js"
+    - "index.js"
+
+flags:
+  unit:
+    paths:
+      - src/
+    carryforward: true
+    
+  integration:
+    paths:
+      - src/
+    carryforward: true
+
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+  branches:
+    - main
+    - develop

@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.expo/
+.expo-shared/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+
+# React Native
+*.hprof
+android/app/debug
+android/app/release
+ios/build
+android/gradle/wrapper/gradle-wrapper.properties

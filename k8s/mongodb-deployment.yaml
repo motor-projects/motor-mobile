@@ -1,0 +1,156 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: motorcycle-system
+  labels:
+    app: mongodb
+spec:
+  serviceName: "mongodb-headless"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:6.0
+        command:
+        - mongod
+        - "--replSet"
+        - "rs0"
+        - "--bind_ip_all"
+        - "--port"
+        - "27017"
+        ports:
+        - containerPort: 27017
+        env:
+        - name: MONGO_INITDB_ROOT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: motorcycle-secrets
+              key: MONGO_ROOT_USERNAME
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: motorcycle-secrets
+              key: MONGO_ROOT_PASSWORD
+        - name: MONGO_INITDB_DATABASE
+          value: "motorcycle"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - mongo
+            - --eval
+            - "db.adminCommand('ping')"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - mongo
+            - --eval
+            - "db.adminCommand('ping')"
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: mongodb-storage
+          mountPath: /data/db
+        - name: mongodb-init
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+      volumes:
+      - name: mongodb-init
+        configMap:
+          name: mongodb-init
+  volumeClaimTemplates:
+  - metadata:
+      name: mongodb-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
+      storageClassName: fast-ssd
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-headless
+  namespace: motorcycle-system
+  labels:
+    app: mongodb
+spec:
+  ports:
+  - port: 27017
+    targetPort: 27017
+  clusterIP: None
+  selector:
+    app: mongodb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-service
+  namespace: motorcycle-system
+  labels:
+    app: mongodb
+spec:
+  ports:
+  - port: 27017
+    targetPort: 27017
+  selector:
+    app: mongodb
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongodb-init
+  namespace: motorcycle-system
+data:
+  init-replica-set.js: |
+    // 初始化 MongoDB 副本集
+    rs.initiate({
+      _id: "rs0",
+      members: [
+        { _id: 0, host: "mongodb-0.mongodb-headless.motorcycle-system.svc.cluster.local:27017" },
+        { _id: 1, host: "mongodb-1.mongodb-headless.motorcycle-system.svc.cluster.local:27017" },
+        { _id: 2, host: "mongodb-2.mongodb-headless.motorcycle-system.svc.cluster.local:27017" }
+      ]
+    });
+
+    // 创建应用数据库和用户
+    use motorcycle;
+    db.createUser({
+      user: "appuser",
+      pwd: "apppassword",
+      roles: [
+        { role: "readWrite", db: "motorcycle" }
+      ]
+    });
+
+    // 创建初始集合和索引
+    db.motorcycles.createIndex({ "model": 1 });
+    db.motorcycles.createIndex({ "brand": 1 });
+    db.motorcycles.createIndex({ "year": -1 });
+    db.motorcycles.createIndex({ "performance.horsepower": -1 });
+    db.motorcycles.createIndex({ "performance.topSpeed": -1 });
+    db.users.createIndex({ "email": 1 }, { unique: true });
+    db.reviews.createIndex({ "motorcycleId": 1 });
+    db.reviews.createIndex({ "userId": 1 });
+    db.reviews.createIndex({ "createdAt": -1 });
